@@ -1,0 +1,44 @@
+# Database Configuration
+database:
+  raw:
+    driver: "ODBC Driver 17 for SQL Server"
+    server: "localhost"
+    username: "sa"
+    password: "YourStrong!Passw0rd"
+    trusted_connection: false
+  
+  staging:
+    driver: "ODBC Driver 17 for SQL Server"
+    server: "localhost"
+    username: "sa"
+    password: "YourStrong!Passw0rd"
+    database: "Kramse_STAGING"
+    trusted_connection: false
+    
+  production:
+    driver: "ODBC Driver 17 for SQL Server"
+    server: "localhost"
+    username: "sa"
+    password: "YourStrong!Passw0rd"
+    database: "Kramse_DWH"
+    trusted_connection: false
+
+# Pipeline Configuration
+pipeline:
+  batch_size: 1000
+  retry_attempts: 3
+  timeout_seconds: 300
+  
+# Data Sources
+data_sources:
+  container_file: "data/Container v3.txt"
+  consignor_file: "data/Consignor.csv"
+  eu_mrv_file: "data/2016-EU MRV Publication of information v5.csv"
+  accessdb_file: "data/KramseTPS v7.mdb"
+
+# Logging
+logging:
+  level: "INFO"
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name} | {message}"
+  rotation: "1 week"
+  retention: "1 month"
