@@ -103,20 +103,31 @@ class KramseETL:
             raise
     
     def extract_eu_mrv_data(self, file_path=None):
-        """Extract EU MRV shipping data from CSV file"""
+        """Extract EU MRV shipping data from CSV file with column optimization"""
         try:
             if file_path is None:
                 file_path = os.getenv('EU_MRV_FILE', 'data/2016-EU MRV Publication of information v5.csv')
                 
             logger.info(f"Reading EU MRV data from {file_path}")
             
-            df = pd.read_csv(
+            # First, let's see what's in the file
+            df_sample = pd.read_csv(
+                file_path,
+                encoding='latin-1',
+                nrows=5  # Just read first 5 rows to inspect
+            )
+            
+            logger.info(f"EU MRV file has {len(df_sample.columns)} columns")
+            logger.info(f"Sample columns: {list(df_sample.columns[:10])}")  # Show first 10
+            
+            # Now read the full dataset
+            df_full = pd.read_csv(
                 file_path,
                 encoding='latin-1'
             )
             
-            logger.info(f"Extracted {len(df)} EU MRV records")
-            return df
+            logger.info(f"Extracted {len(df_full)} EU MRV records with {len(df_full.columns)} columns")
+            return df_full
             
         except Exception as e:
             logger.error(f"Failed to extract EU MRV data: {e}")
@@ -174,6 +185,31 @@ class KramseETL:
             logger.error(f"Failed to extract Access data: {e}")
             raise
     
+    def _clean_column_name(self, col_name):
+        """Clean column names for SQL Server compatibility"""
+        import re
+        
+        # Convert to string and replace problematic characters
+        clean_name = str(col_name)
+        
+        # Replace spaces and special characters with underscores
+        clean_name = re.sub(r'[^\w]', '_', clean_name)
+        
+        # Remove multiple underscores
+        clean_name = re.sub(r'_+', '_', clean_name)
+        
+        # Remove leading/trailing underscores
+        clean_name = clean_name.strip('_')
+        
+        # Ensure it doesn't start with a number
+        if clean_name and clean_name[0].isdigit():
+            clean_name = 'col_' + clean_name
+        
+        # Limit length to 100 characters (SQL Server friendly)
+        clean_name = clean_name[:100]
+        
+        return clean_name if clean_name else 'unnamed_column'
+    
     def clean_container_data(self, df):
         """Clean and transform container data"""
         try:
@@ -224,28 +260,81 @@ class KramseETL:
             raise
     
     def clean_eu_mrv_data(self, df):
-        """Clean and transform EU MRV shipping data"""
+        """Clean and prepare EU MRV data for loading - using ALL columns"""
         try:
-            logger.info("Cleaning EU MRV data")
+            logger.info(f"Starting cleaning of EU MRV data with {len(df)} records and {len(df.columns)} columns")
             
-            clean_df = df.copy()
+            # Keep ALL columns instead of limiting them
+            logger.info(f"Processing all {len(df.columns)} columns from EU MRV data")
             
-            # Add metadata columns
-            clean_df['source_file'] = '2016-EU MRV Publication of information v5.csv'
-            clean_df['loaded_at'] = datetime.now()
+            # Clean column names for SQL Server compatibility
+            original_columns = df.columns.tolist()
+            df.columns = [self._clean_column_name(col) for col in df.columns]
+            
+            logger.info(f"Sample column mapping (first 10): {dict(list(zip(original_columns[:10], df.columns[:10])))}...")
             
             # Basic data cleaning
-            for col in clean_df.columns:
-                if clean_df[col].dtype == 'object':
-                    clean_df[col] = clean_df[col].astype(str).str.strip()
-                    clean_df[col] = clean_df[col].replace('nan', None)
+            df = df.fillna('')  # Replace NaN with empty strings
             
-            logger.info(f"Cleaned {len(clean_df)} EU MRV records")
-            return clean_df
+            # Add metadata columns
+            df['processed_date'] = pd.Timestamp.now()
+            df['source_file'] = 'eu_mrv_data'
+            df['total_columns_in_source'] = len(original_columns)
+            
+            logger.info(f"EU MRV data cleaned successfully: {len(df)} records, {len(df.columns)} columns")
+            return df
             
         except Exception as e:
             logger.error(f"Failed to clean EU MRV data: {e}")
             raise
+    
+    def load_eu_mrv_to_database(self, df, target_db="Kramse_RAW"):
+        """Special loading method for EU MRV data - record by record for all columns"""
+        try:
+            table_name = "eu_mrv_shipping"
+            
+            logger.info(f"Loading {len(df)} EU MRV records with {len(df.columns)} columns to {target_db}.{table_name} one by one")
+            
+            # Create engine for specific target database
+            server = os.getenv('DB_SERVER', 'localhost')
+            username = os.getenv('DB_USERNAME', 'sa')
+            password = os.getenv('DB_PASSWORD')
+            driver = os.getenv('DB_DRIVER', 'ODBC Driver 17 for SQL Server')
+            
+            connection_string = f"mssql+pyodbc://{username}:{password}@{server}/{target_db}?driver={driver.replace(' ', '+')}&TrustServerCertificate=yes"
+            engine = sa.create_engine(connection_string)
+            
+            # Load record by record to avoid parameter limits
+            total_loaded = 0
+            failed_records = 0
+            
+            # First record replaces table, then append
+            for i, (index, row) in enumerate(df.iterrows()):
+                try:
+                    row_df = pd.DataFrame([row])
+                    row_df.to_sql(
+                        name=table_name,
+                        con=engine,
+                        if_exists='replace' if i == 0 else 'append',
+                        index=False,
+                        method=None  # Use default method for single records
+                    )
+                    total_loaded += 1
+                    
+                    if (i + 1) % 100 == 0:  # Log every 100 records
+                        logger.info(f"Loaded {i + 1} records so far...")
+                        
+                except Exception as record_error:
+                    failed_records += 1
+                    logger.warning(f"Failed to load record {i + 1}: {record_error}")
+                    continue
+            
+            logger.info(f"EU MRV data loading completed: {total_loaded}/{len(df)} records loaded successfully ({failed_records} failed)")
+            return total_loaded
+            
+        except Exception as e:
+            logger.error(f"Failed to load EU MRV data: {e}")
+            return 0
     
     def clean_access_data(self, access_data_dict):
         """Clean and transform MS Access data"""
@@ -342,8 +431,19 @@ class KramseETL:
             clean_consignor_df = self.clean_consignor_data(consignor_df)
             self.load_to_database(clean_consignor_df, 'consignors')
             
-            # Skip EU MRV data for now due to too many columns (62+)
-            logger.info("Skipping EU MRV data (too many columns for SQL Server batch processing)")
+            # Extract, clean and load EU MRV data with special handling
+            logger.info("Processing EU MRV data with column limit handling...")
+            try:
+                eu_mrv_df = self.extract_eu_mrv_data()
+                if eu_mrv_df is not None and not eu_mrv_df.empty:
+                    clean_eu_mrv_df = self.clean_eu_mrv_data(eu_mrv_df)
+                    loaded_count = self.load_eu_mrv_to_database(clean_eu_mrv_df)
+                    logger.info(f"EU MRV processing completed: {loaded_count} records loaded")
+                else:
+                    logger.warning("No EU MRV data found to process")
+            except Exception as eu_error:
+                logger.error(f"EU MRV processing failed: {eu_error}")
+                logger.info("Continuing with rest of pipeline...")
             
             # Extract, clean and load Access database data
             logger.info("Processing MS Access database...")
@@ -389,10 +489,14 @@ class KramseETL:
                 total_records += consignor_count
                 
                 # EU MRV summary
-                result = conn.execute(sa.text("SELECT COUNT(*) as count FROM eu_mrv_shipping"))
-                eu_mrv_count = result.fetchone()[0]
-                logger.info(f"EU MRV records loaded: {eu_mrv_count}")
-                total_records += eu_mrv_count
+                try:
+                    result = conn.execute(sa.text("SELECT COUNT(*) as count FROM eu_mrv_data"))
+                    eu_mrv_count = result.fetchone()[0]
+                    logger.info(f"EU MRV records loaded: {eu_mrv_count}")
+                    total_records += eu_mrv_count
+                except Exception as eu_error:
+                    logger.warning(f"Could not get EU MRV count (table may not exist): {eu_error}")
+                    eu_mrv_count = 0
                 
                 # Access tables summary
                 try:
