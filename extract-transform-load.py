@@ -278,7 +278,7 @@ class KramseETL:
             
             # Add metadata columns
             df['processed_date'] = pd.Timestamp.now()
-            df['source_file'] = 'eu_mrv_data'
+            df['source_file'] = 'eu_mrv_shipping'
             df['total_columns_in_source'] = len(original_columns)
             
             logger.info(f"EU MRV data cleaned successfully: {len(df)} records, {len(df.columns)} columns")
@@ -490,7 +490,7 @@ class KramseETL:
                 
                 # EU MRV summary
                 try:
-                    result = conn.execute(sa.text("SELECT COUNT(*) as count FROM eu_mrv_data"))
+                    result = conn.execute(sa.text("SELECT COUNT(*) as count FROM eu_mrv_shipping"))
                     eu_mrv_count = result.fetchone()[0]
                     logger.info(f"EU MRV records loaded: {eu_mrv_count}")
                     total_records += eu_mrv_count
